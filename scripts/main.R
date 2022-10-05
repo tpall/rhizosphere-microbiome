@@ -10,6 +10,11 @@ library("microViz")
 library("brms")
 library("tidybayes")
 library("microbiome")
+library("phyloseqGraphTest")
+library("ggsci")
+library("ggvenn")
+library("modelr")
+
 old <- theme_set(theme_cowplot())
 
 
@@ -31,7 +36,7 @@ if (!file.exists(biom1)) {
 }
 
 ps <- import_biom(biom1)
-ps <- phyloseq_validate(ps, remove_undetected = TRUE)
+ps <- phyloseq_validate(ps, remove_undetected = TRUE, verbose = FALSE)
 ps <- tax_fix(ps, unknowns = c("Actinobacteria_unclassified"))
 ps <- subset_samples(ps, str_detect(SAMPLE, "Z\\d"))
 
@@ -47,8 +52,10 @@ ps <- ps %>%
       map(1) %>% 
       unlist(),
     zone = str_extract(sample_name, "^Z\\d"),
-    rhizo = as.numeric(str_detect(SAMPLE, "plus"))
-  )
+    rhizo = as.numeric(str_detect(SAMPLE, "plus")),
+    zoneplus = paste0(zone, ifelse(as.logical(rhizo), "+", ""))
+   )
+
 
 #' Update tax_table
 colnames(tax_table(ps)) <- c("Kingdom", "Phylum", "Class", "Order", "Family", "Genus")
@@ -82,53 +89,61 @@ tax_tab[1:5,1:5]
 #'
 #' Drop singleton OTUs
 #+
-# pss <- ps
-# otu_table(pss)[otu_table(ps) / colSums(otu_table(ps)) < 0.001] <- 0
-# all.equal(otu_table(ps), otu_table(pss))
-# pss <- ps_filter(pss)
-
-pss <- subset_taxa(ps, rowSums(otu_table(ps)) > 1) # rowSums(otu_table(ps)) != 1 # apply(otu_table(ps) / colSums(otu_table(ps)), 1, max) < 0.001
+pss <- subset_taxa(ps, rowSums(otu_table(ps)) > 0) # rowSums(otu_table(ps)) != 1 # apply(otu_table(ps) / colSums(otu_table(ps)), 1, max) < 0.001
+psr <- rarefy_even_depth(ps, rngseed = 11)
 
 #'
 #' Top10 tax overview.
 #+
-pss %>% 
+ps %>% 
   comp_barplot(tax_level = "Genus", sample_order = "default", n_taxa = 10, label = "sample_name") +
   coord_flip()
+
+#'
+#' Graph-based permutation test
+#+
+gt <- graph_perm_test(ps, "zoneplus", grouping = "sample_name", distance = "jaccard", type = "knn")
+plotNet1 <- plot_test_network(gt) + 
+  ggsci::scale_color_d3() +
+  theme(legend.text = element_text(size = 8),
+        legend.title = element_text(size = 9))
+plotPerm1 <- plot_permutations(gt)
+plotNet1 + plotPerm1
 
 #' 
 #' Number of OTUs in *S. alba* cuttings with and without *S. europea* rhizosphere 
 #' supplement.
 #' 
 #+
-salba <- pss %>% 
+salba <- ps %>% 
   ps_filter(!str_detect(SAMPLE, "plus"))
 nrow(otu_table(salba))
 6697 #12133
 
-salba_plus <- pss %>% 
+salba_plus <- ps %>% 
   ps_filter(str_detect(SAMPLE, "plus"))
 nrow(otu_table(salba_plus))
 8693 #19731
 
-nrow(otu_table(pss))
+nrow(otu_table(ps))
+ntaxa(ps)
 10137 #26611
 
 #'
 #' Total number of unique sequences
 #'
 #+
-sum(otu_table(pss))
-1439201
+sum(otu_table(ps))
+1439201 #1455675
 
 #'
-#'
+#' ## Rarefaction
 #'
 #+
-psr <- rarefy_even_depth(pss, rngseed = 11)
+psr <- rarefy_even_depth(ps, rngseed = 11)
 salbar <- psr %>% 
   ps_filter(!str_detect(SAMPLE, "plus"))
-nrow(otu_table(salbar))
+ntaxa(salbar)
 3231 #4209
 
 salbar_plus <- psr %>% 
@@ -141,6 +156,11 @@ sum(otu_table(psr))
 ntaxa(psr)
 8255 # number of unique otus
 
+otus <- otu_table(psr)
+colnames(otus) <- sample_data(psr)$sample_name
+otus
+
+
 #'
 #' - Venn diagrams of the shared OTUs across the zones 
 #' (including individual samples 1-6). 
@@ -151,13 +171,18 @@ ntaxa(psr)
 #' 
 #'
 #+
-groups <- as.factor(paste0(sample_data(pss)$"zone", ifelse(sample_data(pss)$"rhizo" == 1, "+Se-rhiz", "")))
-pssm <- merge_samples(psr, group = groups, fun = sum)
+groups <- as.factor(paste0(sample_data(ps)$"zone", ifelse(as.logical(sample_data(pss)$"rhizo"), "+", "")))
+pssm <- ps %>% 
+  rarefy_even_depth(rngseed = 11) %>% 
+  merge_samples(group = groups, fun = sum)
+
+#' Parsing sample data
+#+
 samples <- sample_data(pssm) %>% 
   as.data.frame()
 samples$SAMPLE <- row.names(samples)
 samples$zone <- str_extract(samples$SAMPLE, "^Z\\d")
-samples$rhizo <- if_else(samples$rhizo > 0, 1, 0)
+samples$rhizo <- ifelse(samples$rhizo > 0, 1, 0)
 samples$sample_name <- samples$SAMPLE
 sample_data(pssm) <- samples
 
@@ -166,64 +191,57 @@ otu_table(pssm)[1:6, 1:10]
 #' 
 #' Subset a groups for OTU sets comparison.
 #+ 
-samples$SAMPLE
-z1 <- pssm %>% 
-  subset_samples(SAMPLE == "Z1") %>% 
-  filter_taxa(function(x) x > 0, TRUE) %>% 
-  taxa_names()
-z1rhiz <- pssm %>% 
-  subset_samples(SAMPLE == "Z1+Se-rhiz") %>% 
-  filter_taxa(function(x) x > 0, TRUE) %>% 
-  taxa_names()
-z2 <- pssm %>% 
-  subset_samples(SAMPLE == "Z2") %>% 
-  filter_taxa(function(x) x > 0, TRUE) %>% 
-  taxa_names()
-z2rhiz <- pssm %>% 
-  subset_samples(SAMPLE == "Z2+Se-rhiz") %>% 
-  filter_taxa(function(x) x > 0, TRUE) %>% 
-  taxa_names()
-z3 <- pssm %>% 
-  subset_samples(SAMPLE == "Z3") %>% 
-  filter_taxa(function(x) x > 0, TRUE) %>% 
-  taxa_names()
-z3rhiz <- pssm %>% 
-  subset_samples(SAMPLE == "Z3+Se-rhiz") %>% 
-  filter_taxa(function(x) x > 0, TRUE) %>% 
-  taxa_names()
-otu.sets <- list("Z1" = z1, "Z1+Se-rhiz" = z1rhiz, "Z2" = z2, "Z2+Se-rhiz" = z2rhiz, "Z3" = z3, "Z3+Se-rhiz" = z3rhiz)
-
+d <- t(otu_table(pssm)) > 0
+d <- as_tibble(d@.Data, rownames = "otu")
 
 #'
 #' Venn diagrams.
 #'
 #'
 #' Kui palju OTUsid on per tsoon
+#' 
+#' 
+#' Rarefied data
 #+
-map_dbl(otu.sets, length) %>% sort()
+colSums(t(otu_table(pssm)) > 0)
+# Z1  Z1+   Z2  Z2+   Z3  Z3+ 
+# 2172 3690 1894 1654 1311 1893 
+
+#' 
+#' Non-rarefied data
+#+
+colSums(t(otu_table(merge_samples(ps, group = groups, fun = sum))) > 0)
+# Z1  Z1+   Z2  Z2+   Z3  Z3+ 
+# 6356 9423 4989 4488 3537 9414 
 
 #' 
 #' Common OTUs in unsupplemented soils
 #'
 #+
-no_rhiz <- ggplot() + 
-  geom_venn(otu.sets[c(1, 3, 5)]) +
-  theme_void() +
-  theme(legend.position = "none")  +
-  coord_fixed(ratio = 1, clip = "off")
-length(Reduce(intersect, otu.sets[c(1, 3, 5)]))
+fill_col <- ggsci::pal_npg()(6)
+text_size <-  3.5
+set_name_size <- 5
+show_perc <- FALSE
+no_rhiz <- ggvenn(d, c("Z1", "Z2", "Z3"), fill_color = fill_col, text_size = text_size, set_name_size = set_name_size, show_percentage = show_perc, stroke_color = NA)
+
+get_common_otus <- function(x) {
+  x %>% 
+    rowwise() %>% 
+    apply(1, all) %>% 
+    sum()
+}
+
+d[c("Z1", "Z2", "Z3")] %>% get_common_otus()
 321 #323
 
 #' 
-#' Common OTUs in Se rhizo supplemented soils
+#' Common OTUs in +rhizo supplemented soils
 #'
 #+
-rhiz <- ggplot() + 
-  geom_venn(otu.sets[c(2, 4, 6)]) +
-  theme_void() +
-  theme(legend.position = "none") +
-  coord_fixed(ratio = 1, clip = "off")
-length(Reduce(intersect, otu.sets[c(2, 4, 6)]))
+rhiz <- d %>% 
+  rename(`Z1+rhiz` = `Z1+`, `Z2+rhiz` = `Z2+`, `Z3+rhiz` = `Z3+`) %>% 
+  ggvenn(c("Z1+rhiz", "Z2+rhiz", "Z3+rhiz"), fill_color = fill_col, text_size = text_size, set_name_size = set_name_size, show_percentage = show_perc, stroke_color = NA)
+d[c("Z1+", "Z2+", "Z3+")] %>% get_common_otus()
 346 #341
 
 a <- no_rhiz + rhiz
@@ -236,9 +254,9 @@ ggsave("plots/venn_panela.png", a)
 #+
 data <- tibble(
   ser = c("No", "Yes"),
-  total = c(ntaxa(salbar), ntaxa(salbar_plus)),
-  common = c(length(Reduce(intersect, otu.sets[c(1, 3, 5)])), length(Reduce(intersect, otu.sets[c(2, 4, 6)])))
-)
+  total = c(ntaxa(ps_filter(pssm, !str_detect(SAMPLE, "\\+"))), ntaxa(ps_filter(pssm, str_detect(SAMPLE, "\\+")))),
+  common = c(d[c("Z1", "Z2", "Z3")] %>% get_common_otus(), d[c("Z1+", "Z2+", "Z3+")] %>% get_common_otus())
+  )
 
 get_prior(
   common | trials(total) ~ ser,
@@ -256,37 +274,27 @@ m1 <- brm(
 )
 
 pp_check(m1)
-conditional_effects(m1)
+plot(conditional_effects(m1))
 
 hypothesis(m1, "serYes = 0")
 as.data.frame(m1) %>% 
-  mean_qi(
-    no = exp(b_Intercept), 
-    yes = exp(b_Intercept + b_serYes),
-    es = no - yes) %>% 
-  mutate_at(vars(matches("no|yes|es")), scales::percent, accuracy = 0.1)
+  mean_hdci(
+    no = inv_logit_scaled(b_Intercept), 
+    yes = inv_logit_scaled(b_Intercept + b_serYes),
+    es = no - yes, 
+    h1 = as.numeric(es > 0),
+    .width = 0.95) %>% 
+  mutate_at(vars(matches("no|yes|es")), scales::percent, accuracy = 0.01)
 
 #'
 #' Is there any difference in number of common OTUs within each site w/wo 
 #' treatment, what's the proportion of common OTUs
 #+
-z1 <- ggplot() + 
-  geom_venn(otu.sets[c(1, 2)]) +
-  theme_void() +
-  theme(legend.position = "none") +
-  coord_fixed(ratio = 1/1.5, clip = "off")
-
-z2 <- ggplot() + 
-  geom_venn(otu.sets[c(3, 4)]) +
-  theme_void() +
-  theme(legend.position = "none") +
-  coord_fixed(ratio = 1/1.5, clip = "off")
-
-z3 <- ggplot() + 
-  geom_venn(otu.sets[c(5, 6)]) +
-  theme_void() +
-  theme(legend.position = "none") +
-  coord_fixed(ratio = 1/1.5, clip = "off")
+d_renamed <- d %>% 
+  rename(`Z1+rhiz` = `Z1+`, `Z2+rhiz` = `Z2+`, `Z3+rhiz` = `Z3+`)
+z1 <- ggvenn(d_renamed, c("Z1", "Z1+rhiz"), fill_color = fill_col, text_size = text_size, set_name_size = set_name_size, show_percentage = show_perc, stroke_color = NA)
+z2 <- ggvenn(d_renamed, c("Z2", "Z2+rhiz"), fill_color = fill_col, text_size = text_size, set_name_size = set_name_size, show_percentage = show_perc, stroke_color = NA)
+z3 <- ggvenn(d_renamed, c("Z3", "Z3+rhiz"), fill_color = fill_col, text_size = text_size, set_name_size = set_name_size, show_percentage = show_perc, stroke_color = NA)
 
 b <- z1 + z2 + z3
 ggsave("plots/venn_panelb.png", b)
@@ -297,17 +305,17 @@ data <- tibble(
   zone = rep(str_c("Z", 1:3), each = 2),
   ser = rep(c("No", "Yes"), 3),
   common = rep(c(
-    length(Reduce(intersect, otu.sets[c(1, 2)])), 
-    length(Reduce(intersect, otu.sets[c(3, 4)])),
-    length(Reduce(intersect, otu.sets[c(5, 6)]))
+    d[c("Z1", "Z1+")] %>% get_common_otus(), 
+    d[c("Z2", "Z2+")] %>% get_common_otus(),
+    d[c("Z3", "Z3+")] %>% get_common_otus()
   ), each = 2),
   total = c(
-    length(otu.sets[[1]]),
-    length(otu.sets[[2]]),
-    length(otu.sets[[3]]),
-    length(otu.sets[[4]]),
-    length(otu.sets[[5]]),
-    length(otu.sets[[6]])
+    sum(d["Z1"]),
+    sum(d["Z1+"]),
+    sum(d["Z2"]),
+    sum(d["Z2+"]),
+    sum(d["Z3"]),
+    sum(d["Z3+"])
     )
 )
 
@@ -329,174 +337,123 @@ m2 <- brm(
 pp_check(m2)
 mp <- plot(conditional_effects(m2), plot = FALSE)
 pd <- position_dodge(0.3)
-data %>% 
-  add_epred_draws(m2) %>% 
-  mutate(.epred = .epred / total) %>% 
-  ggplot(aes(x = zone, y = .epred, color = ser)) +
-  stat_pointinterval() +
-  stat_lineribbon(.width = 0.95, alpha = 0.3)
-
-
-#'
-#' Decrease in OTUs  across zones
-#' 
-get_prior(
-  total ~ ser + zone + ser:zone,
-  data = data,
-  family = negbinomial()
-)
-
-m2.1 <- brm(
-  total ~ ser + zone + ser:zone,
-  data = data,
-  family = poisson(),
-  prior = prior(normal(0, 0.5), class = b),
-  iter = 2600,
-  file = here("models/total ~ ser + zone + ser:zone"),
-  file_refit = "on_change"
-)
-
-plot(conditional_effects(m2.1), ask = FALSE)
-
-m2.2 <- brm(
-  total ~ 1 + (ser | zone),
-  data = data,
-  family = poisson(),
-  # prior = prior(normal(0, 0.5), class = b),
-  iter = 2000,
-  file = here("models/total ~ 1 + (ser | zone)"),
-  file_refit = "on_change"
-)
-
-pp_check(m2.2)
-plot(conditional_effects(m2.2), ask = FALSE)
-
-draws <- data %>% 
-  add_epred_draws(m2.2)
-draws %>% 
-  ggplot(aes(zone, .epred, color = ser)) +
-  stat_pointinterval()
-draws %>% 
-  mean_qi()
-
+venn_df_model <- data %>% 
+  add_linpred_draws(m2) %>% 
+  ggplot(aes(x = zone, y = inv_logit_scaled(.linpred), color = ser)) +
+  stat_pointinterval(position = pd) +
+  scale_color_discrete("S. europaea\nrhizosphere") +
+  labs(y = "Proportion of\ncommon OTUs") +
+  theme(
+    axis.title.x = element_blank(),
+    legend.position = "bottom", 
+    legend.title = element_text(vjust = 2)
+    )
 
 #'
 #' OTUs common to all sites
 #'
 #+
-all <- Reduce(intersect, otu.sets[c(1, 3, 5, 2, 4, 6)])
-length(all)
+d[-1] %>% get_common_otus()
 198 #203
 
-otu.sets %>% 
-  unlist() %>% 
-  unique() %>% 
-  length()
+nrow(d)
 5776 #8255
 
+comm1 <- brm(
+  common | trials(total) ~ 1,
+  data = tibble(common = d[-1] %>% get_common_otus(), total = nrow(d)),
+  family = binomial()
+)
 
-no_rhiz_all <- otu.sets[c(1, 3, 5)] %>% unlist() %>% unique()
-rhiz_all <- otu.sets[c(2, 4, 6)] %>% unlist() %>% unique()
-c <- ggplot() + 
-  geom_venn(list("no supp" = no_rhiz_all, "+Se-rhiz" = rhiz_all)) +
-  theme_void() +
-  theme(legend.position = "none") +
-  coord_fixed(ratio = 0.67,  clip = "off")
+fixef(comm1) %>% inv_logit_scaled()
+
+
+c <- d %>% 
+  rowwise() %>% 
+  mutate(
+    `-rhiz` = any(Z1, Z2, Z3),
+    `+rhiz` = any(`Z1+`, `Z2+`, `Z3+`)
+  ) %>% 
+  ggvenn(c("-rhiz", "+rhiz"), fill_color = fill_col, text_size = text_size, set_name_size = set_name_size, show_percentage = show_perc, stroke_color = NA)
 ggsave(here("plots/venn_panelc.png"), c)
 
-design <- "
-AABBCC
-AABBCC
-EEEEEE
-EEEEEE
-"
-venns <- a + c + b + 
-  plot_layout(design = design) +
-  plot_annotation(tag_levels = "A")
-ggsave(here("plots/venn_diagrams.png"), width = 20, height = 12, units = "cm")
+venns <- (no_rhiz | rhiz | c) / (z1 | z2 | z3) / ((plot_spacer() | venn_df_model | plot_spacer()) + plot_layout(widths = c(1, 6, 1))) +
+  plot_annotation(tag_levels = "A") & theme(plot.tag = element_text(face = "plain"))
+ggsave(here("plots/venn_diagrams.png"), width = 20, height = 18, units = "cm")
+tiff(here("plots/venn_diagrams.tiff"), width = 20, height = 18, units = "cm", res = 300)
+venns
+dev.off()
 
 #'
 #' ## Diversity indices
 #'
 #+
-richness <- estimate_richness(pss, measures = c("Observed", "Shannon", "InvSimpson"))
-samples <- sample_data(pss) %>% 
-  as.matrix() %>% 
-  as_tibble() %>% 
-  mutate_at("SAMPLE", str_replace_all, "-", ".") %>% 
-  mutate_at("zone", ~as.numeric(str_extract(.x, "\\d")))
-alpha <- richness %>% 
-  rownames_to_column(var="SAMPLE") %>% 
-  as_tibble() %>% 
-  mutate(Evenness = Shannon / log(Observed)) %>% 
-  left_join(samples)
+rich <- estimate_richness(ps, measures = c("Observed", "Shannon", "InvSimpson")) %>% 
+  as_tibble(rownames = "library")
+alpha <- as_tibble(sample_data(ps)) %>% 
+  mutate_at("zone", ~as.numeric(str_extract(.x, "\\d"))) %>% 
+  bind_cols(rich) %>% 
+  mutate(zone = str_c("Z", zone), rhizo = ifelse(as.logical(rhizo), "+ser", "-ser"))
+
+libsize <- otu_table(ps) %>% 
+  colSums()
+alpha$log_libsize <- log(libsize)
+mean(log(libsize))
 
 #'
 #' Observed nr of OTUs.
 #'
 #+
 get_prior(
-  Observed ~ zone + rhizo + zone:rhizo,
+  Observed ~ log_libsize + rhizo + zone + rhizo:zone,
   data = alpha,
   family = negbinomial()
 )
 
 m3o <- brm(
-  Observed ~ zone + rhizo + zone:rhizo,
+  Observed ~ log_libsize + rhizo + zone + rhizo:zone,
   data = alpha,
   family = negbinomial(),
-  prior = prior("student_t(3, 0, 1)", class = "b"),
-  file = here("models/Observed ~ zone + rhizo + zone:rhizo"),
+  prior = c(prior("normal(0, 1)", class = "b")),
+  file = here("models/Observed ~ log_libsize + rhizo + zone + rhizo:zone"),
   file_refit = "on_change",
-  sample_prior = "yes"
+  iter = 2000
 )
 
-m3o1 <- brm(
-  Observed ~ 1 + (rhizo | zone),
-  data = alpha,
-  family = negbinomial(),
-  # prior = prior("student_t(3, 0, 1)", class = "b"),
-  file = here("models/Observed ~ 1 + (rhizo | zone)"),
-  file_refit = "on_change",
-  sample_prior = "yes"
-)
-
-pp_check(m3o1)
-loo(m3o, m3o1)
-
-pp_check(m3o)
-po <- plot(conditional_effects(m3o), plot = FALSE)
 summary(m3o)
-as.data.frame(m3o)
-hypothesis(m3o, "zone = 0", alpha = 0.05)
-hypothesis(m3o, "zone + rhizo1 + zone:rhizo1 = 0", alpha = 0.05)
-pp1o <- po$zone + scale_x_continuous("Zone", breaks = c(1, 2, 3))
-pp2o <- po$`zone:rhizo` +   
-  geom_text(data = tibble(zone = c(2, 3), Observed = c(1700, 1600), label = c("*", "*")), aes(zone, Observed, label = label), inherit.aes = FALSE) +
-  scale_x_continuous("Zone", breaks = c(1, 2, 3)) +
-  theme(axis.title.y = element_blank(),
-        legend.position = "none")
-
-pd <- position_dodge(0.8)
-pp3o <- alpha %>% 
-  ggplot(aes(as.factor(zone), Observed, color = rhizo)) +
-  geom_boxplot(position = pd, outlier.color = NA, witdh = 0.5) +
-  geom_point(position = position_jitterdodge(jitter.width = 0.1, dodge.width = 0.8)) + 
-  scale_x_discrete("Zone", breaks = c(1, 2, 3)) +
-  theme(legend.position = "none")
-observed <- pp3o / (pp1o + pp2o)
-ggsave("plots/diversity_observed.png", observed)
+pp_check(m3o)
 
 newdata <- alpha %>% 
+  data_grid(rhizo, zone, log_libsize = 10) %>% 
   add_epred_draws(m3o)
-newdata %>% 
+
+oh <- newdata %>% 
   group_by(rhizo) %>% 
   mutate(id = row_number()) %>% 
   select(id, zone, rhizo, .draw, .epred) %>% 
   pivot_wider(names_from = rhizo, values_from = .epred) %>% 
+  mutate(es = `+ser` - `-ser`, h1 = as.numeric(es > 0)) %>% 
   group_by(zone) %>% 
-  mutate(es = `1` - `0`, h1 = es > 0) %>% 
-  mean_qi(`0`, `1`, es, h1)
+  mean_qi(`+ser`, `-ser`, es, h1)
+
+stars <- oh %>% 
+  filter(h1 >= 0.95) %>% 
+  select(zone) %>% 
+  inner_join(alpha) %>% 
+  group_by(zone) %>% 
+  filter(Observed == max(Observed)) %>% 
+  select(zone, Observed) %>% 
+  mutate(label = "*")
+
+observed <- newdata %>% 
+  ggplot() +
+  stat_pointinterval(aes(x = factor(zone), y = .epred, color = rhizo), position = pd) +
+  geom_jitter(data = alpha, aes(x = factor(zone), y = Observed, color = rhizo), position = position_jitterdodge(jitter.width = 0.1, dodge.width = pd$width)) +
+  geom_text(data = stars, aes(zone, Observed, label = label), inherit.aes = FALSE, nudge_y = 100, size = 5) +
+  labs(x = "Zone", y = "Observed") +
+  theme(legend.title = element_blank())
+ggsave(here("plots/diversity_observed.png"))
+hypothesis(m3o, "zoneZ3 < 0")
 
 # Observed number of taxa
 newdata %>% 
@@ -508,51 +465,58 @@ newdata %>%
 #'
 #+
 get_prior(
-  Shannon ~ zone + rhizo + zone:rhizo,
+  Shannon ~ log_libsize + zone + rhizo + zone:rhizo,
   data = alpha,
   family = gaussian()
 )
 
 m3s <- brm(
-  Shannon ~ zone + rhizo + zone:rhizo,
+  Shannon ~ log_libsize + zone + rhizo + zone:rhizo,
   data = alpha,
   family = student(),
   prior = prior("normal(0, 1)", class = "b"),
-  file = here("models/Shannon ~ zone + rhizo + zone:rhizo"),
+  file = here("models/Shannon ~ log_libsize + zone + rhizo + zone:rhizo"),
   file_refit = "on_change",
   sample_prior = "yes"
 )
 
 pp_check(m3s)
-ps <- plot(conditional_effects(m3s), plot = FALSE)
+psh <- plot(conditional_effects(m3s), plot = FALSE)
 summary(m3s)
-hypothesis(m3s, "zone = 0", alpha = 0.05)
-hypothesis(m3o, "zone + rhizo1 + zone:rhizo1 = 0", alpha = 0.05)
-pp1s <- ps$zone + scale_x_continuous("Zone", breaks = c(1, 2, 3))
+
 newdata <- alpha %>% 
-  select(zone, rhizo) %>% 
-  distinct() %>% 
+  data_grid(rhizo, zone, log_libsize = 10) %>% 
   add_epred_draws(m3s)
-newdata %>% 
-  group_by(zone) %>% 
-  select(zone, .draw, rhizo, .epred) %>% 
+
+sh <- newdata %>% 
+  group_by(rhizo) %>% 
+  mutate(id = row_number()) %>% 
+  select(id, zone, rhizo, .draw, .epred) %>% 
   pivot_wider(names_from = rhizo, values_from = .epred) %>% 
-  mutate(es = `1` - `0`, h1 = es > 0) %>% 
-  mean_qi(`0`, `1`, es, h1)
+  mutate(es = `+ser` - `-ser`, h1 = as.numeric(es > 0)) %>% 
+  group_by(zone) %>% 
+  mean_qi(`+ser`, `-ser`, es, h1)
 
-pp2s <- ps$`zone:rhizo` +   
-  # geom_text(data = tibble(zone = c(2, 3), Shannon = c(4.5, 4.3), label = c("*", "*")), aes(zone, Shannon, label = label), inherit.aes = FALSE) +
-  scale_x_continuous("Zone", breaks = c(1, 2, 3)) +
-  theme(axis.title.y = element_blank(),
-        legend.position = "none")
+hypothesis(m3s, "zoneZ3 < 0", alpha = 0.05)
+hypothesis(m3s, "zoneZ2 < 0", alpha = 0.05)
 
-pp3s <- alpha %>% 
-  ggplot(aes(as.factor(zone), Shannon, color = rhizo)) +
-  geom_boxplot(position = pd, outlier.color = NA) +
-  geom_point(position = position_jitterdodge(jitter.width = 0.1, dodge.width = 0.8)) + 
-  scale_x_discrete("Zone", breaks = c(1, 2, 3)) +
-  theme(legend.position = "none")
-shannon <- pp3s / (pp1s + pp2s) 
+stars <- sh %>% 
+  filter(h1 >= 0.95) %>% 
+  select(zone) %>% 
+  inner_join(alpha) %>% 
+  group_by(zone) %>% 
+  filter(Shannon == max(Shannon)) %>% 
+  select(zone, Shannon) %>% 
+  mutate(label = "*")
+
+shannon <- newdata %>% 
+  ggplot() +
+  stat_pointinterval(aes(x = factor(zone), y = .epred, color = rhizo), position = pd) +
+  geom_jitter(data = alpha, aes(x = factor(zone), y = Shannon, color = rhizo), position = position_jitterdodge(jitter.width = 0.1, dodge.width = pd$width)) +
+  geom_text(data = stars, aes(zone, Shannon, label = label), inherit.aes = FALSE, nudge_y = 0.2, size = 5) +
+  labs(x = "Zone", y = "Shannon") +
+  theme(legend.title = element_blank())
+
 ggsave("plots/diversity_shannon.png", shannon)
 
 #'
@@ -560,123 +524,57 @@ ggsave("plots/diversity_shannon.png", shannon)
 #'
 #+
 get_prior(
-  InvSimpson ~ zone + rhizo + zone:rhizo,
+  InvSimpson ~ log_libsize + zone + rhizo + zone:rhizo,
   data = alpha,
   family = gaussian()
 )
 
 m3is <- brm(
-  InvSimpson ~ zone + rhizo + zone:rhizo,
+  InvSimpson ~ log_libsize + zone + rhizo + zone:rhizo,
   data = alpha,
   family = student(),
   prior = prior("student_t(3, 0, 1)", class = "b"),
-  file = here("models/InvSimpson ~ zone + rhizo + zone:rhizo"),
+  file = here("models/InvSimpson ~ log_libsize + zone + rhizo + zone:rhizo"),
   file_refit = "on_change"
 )
 
 pp_check(m3is)
 pis <- plot(conditional_effects(m3is), plot = FALSE)
 summary(m3is)
-hypothesis(m3is, "zone = 0", alpha = 0.05)
-hypothesis(m3is, "rhizo1 = 0", alpha = 0.05)
-hypothesis(m3is, "zone + rhizo1 < 0", alpha = 0.05)
 
-pp1is <- pis$zone + scale_x_continuous("Zone", breaks = c(1, 2, 3))
 newdata <- alpha %>% 
-  select(zone, rhizo) %>% 
-  distinct() %>% 
+  data_grid(rhizo, zone, log_libsize = 10) %>% 
   add_epred_draws(m3is)
+
 newdata %>% 
-  group_by(zone) %>% 
-  select(zone, .draw, rhizo, .epred) %>% 
+  group_by(rhizo) %>% 
+  mutate(id = row_number()) %>% 
+  select(id, zone, rhizo, .draw, .epred) %>% 
   pivot_wider(names_from = rhizo, values_from = .epred) %>% 
-  mutate(es = `1` - `0`, h1 = es > 0) %>% 
-  mean_qi(`0`, `1`, es, h1)
-
-pp2is <- pis$`zone:rhizo` +   
-  scale_x_continuous("Zone", breaks = c(1, 2, 3)) +
-  theme(axis.title.y = element_blank()) +
-  scale_color_discrete("", labels = c("no supp", "+Se rhiz")) +
-  scale_fill_discrete("", labels = c("no supp", "+Se rhiz"))
-
-pp3is <- alpha %>% 
-  ggplot(aes(as.factor(zone), InvSimpson, color = rhizo)) +
-  geom_boxplot(position = pd, outlier.color = NA) +
-  geom_point(position = position_jitterdodge(jitter.width = 0.1, dodge.width = 0.8)) + 
-  scale_x_discrete("Zone", breaks = c(1, 2, 3)) +
-  scale_color_discrete("", labels = c("no supp", "+Se rhiz"))
-invsimpson <- pp3is / (pp1is + pp2is) 
-ggsave("plots/diversity_invsimpson.png", invsimpson)
-
-#'
-#' Evenness
-#'
-#+
-get_prior(
-  Evenness ~ zone + rhizo + zone:rhizo,
-  data = alpha,
-  family = gaussian()
-)
-
-m3e <- brm(
-  Evenness ~ zone + rhizo + zone:rhizo,
-  data = alpha,
-  family = Beta(),
-  prior = prior("student_t(3, 0, 1)", class = "b"),
-  file = here("models/Evenness ~ zone + rhizo + zone:rhizo"),
-  file_refit = "on_change"
-)
-
-pp_check(m3e)
-pe <- plot(conditional_effects(m3e), plot = FALSE)
-summary(m3e)
-hypothesis(m3e, "zone = 0", alpha = 0.05)
-hypothesis(m3e, "rhizo1 = 0", alpha = 0.05)
-hypothesis(m3e, "zone + rhizo1 + zone:rhizo1 = 0", alpha = 0.05)
-
-pp1e <- pe$zone + scale_x_continuous("Zone", breaks = c(1, 2, 3))
-newdata <- alpha %>% 
-  select(zone, rhizo) %>% 
-  distinct() %>% 
-  add_epred_draws(m3e)
-newdata %>% 
+  mutate(es = `+ser` - `-ser`, h1 = as.numeric(es > 0)) %>% 
   group_by(zone) %>% 
-  select(zone, .draw, rhizo, .epred) %>% 
-  pivot_wider(names_from = rhizo, values_from = .epred) %>% 
-  mutate(es = `1` - `0`, h1 = es > 0) %>% 
-  mean_qi(`0`, `1`, es, h1)
+  mean_qi(`+ser`, `-ser`, es, h1)
 
-pp2e <- pe$`zone:rhizo` +   
-  scale_x_continuous("Zone", breaks = c(1, 2, 3)) +
-  theme(axis.title.y = element_blank()) +
-  scale_color_discrete("", labels = c("no supp", "+Se rhiz")) +
-  scale_fill_discrete("", labels = c("no supp", "+Se rhiz"))
+invsimpson <- newdata %>% 
+  ggplot() +
+  stat_pointinterval(aes(x = factor(zone), y = .epred, color = rhizo), position = pd) +
+  geom_jitter(data = alpha, aes(x = factor(zone), y = InvSimpson, color = rhizo), position = position_jitterdodge(jitter.width = 0.1, dodge.width = pd$width)) +
+  labs(x = "Zone", y = "InvSimpson") +
+  theme(legend.title = element_blank())
 
-pp3e <- alpha %>% 
-  ggplot(aes(as.factor(zone), Evenness, color = rhizo)) +
-  geom_boxplot(position = pd, outlier.color = NA) +
-  geom_point(position = position_jitterdodge(jitter.width = 0.1, dodge.width = 0.8)) + 
-  scale_x_discrete("Zone", breaks = c(1, 2, 3)) +
-  scale_color_discrete("", labels = c("no supp", "+Se rhiz"))
-evenness <- pp3e / (pp1e + pp2e) 
-ggsave("plots/diversity_evenness.png", evenness)
+ggsave("plots/diversity_shannon.png", shannon)
+hypothesis(m3s, "zoneZ3 < 0", alpha = 0.05)
+hypothesis(m3s, "zoneZ2 < 0", alpha = 0.05)
 
 #'
 #' Alpha diversity plot
 #'
 #+
-diversity <- observed | shannon | invsimpson + 
+diversity <- (observed | shannon | invsimpson) + 
   plot_layout(guides = "collect")
 
 diversity + plot_annotation(tag_levels = "A")
 ggsave(here("plots/ritchness_plot.png"), width = 25, height = 16, units = "cm")
-
-evenness2 <- (pp3e + theme(legend.position = "none")) / (pp1e + (pp2e + theme(legend.position = "none"))) 
-diversity4 <- observed | shannon | evenness2 | invsimpson + 
-  plot_layout(guides = "collect")
-
-diversity4 + plot_annotation(tag_levels = "A")
-ggsave(here("plots/ritchness_plot4.png"), width = 25, height = 16, units = "cm")
 
 #' 
 #' ## Ordination plot
@@ -689,9 +587,9 @@ ggsave(here("plots/ritchness_plot4.png"), width = 25, height = 16, units = "cm")
 #'
 #+ fig.cap="NMD plot." 
 set.seed(11)
-ord <- ordinate(pss, "NMDS", "bray")
+ord <- ordinate(ps, "NMDS", "bray")
 p2 <- plot_ordination(
-  pss %>% ps_mutate(rhizo = ifelse(rhizo == 0, "no supp", "+Se rhiz")), 
+  ps %>% ps_mutate(rhizo = ifelse(rhizo == 0, "no supp", "+Se rhiz")), 
   ord, 
   type = "samples", 
   color = "zone",
@@ -756,8 +654,11 @@ pdc <- dist_centroid %>%
   theme(legend.title = element_blank(), axis.title.x = element_blank()) 
 ggsave(here("plots/distance_to_centroid_zones_rhizo.png"), pdc, width = 12, height = 8, units = "cm", dpi = 300)
 
-pnmds + pdc + plot_annotation(tag_levels = "A")
-ggsave(here("plots/beta_diversity.png"), width = 20, height = 10, units = "cm", dpi = 300)
+betap <- pnmds + pdc + plot_annotation(tag_levels = "A")
+ggsave(here("plots/beta_diversity.png"), plot = betap, width = 20, height = 10, units = "cm", dpi = 300)
+tiff(here(glue::glue("plots/beta_diversity.tiff")), width = 20, height = 10, units = "cm", res = 300)
+betap
+dev.off()
 
 #'
 #'Halomonadaceae – unclassified
@@ -768,11 +669,11 @@ ggsave(here("plots/beta_diversity.png"), width = 20, height = 10, units = "cm", 
 #+
 n <- 20
 rank <- "Genus"
-top_taxa <- tax_top(psr, n = n, rank = rank)
+top_taxa <- tax_top(ps, n = n, rank = rank)
 highlight <- str_to_lower(top_taxa) %>% 
   str_subset("mari|halo") %>% 
   str_to_sentence()
-htmp <- pss %>% 
+htmp <- ps %>% 
   tax_transform("clr", rank = rank, zero_replace = "halfmin") %>%
   comp_heatmap(
     taxa = top_taxa, 
@@ -792,7 +693,7 @@ htmp <- pss %>%
     row_names_side = "left", sample_side = "bottom",
     use_raster = TRUE
   )
-png(here(glue::glue("plots/heatmap_top{n}.png")), width = 20, height = 20, units = "cm", res = 300)
+tiff(here(glue::glue("plots/heatmap_top{n}.tiff")), width = 20, height = 20, units = "cm", res = 300)
 ComplexHeatmap::draw(
   object = htmp,
   annotation_legend_list = attr(htmp, "AnnoLegends"), merge_legends = TRUE
@@ -800,16 +701,16 @@ ComplexHeatmap::draw(
 dev.off()
 
 rank <- "Phylum"
-top_taxa <- tax_top(pss, n = n, rank = rank)
+top_taxa <- tax_top(ps, n = n, rank = rank)
 subset_taxa(pss, Phylum %in% top_taxa) %>% 
   tax_table()
-p_phy <- pss %>% 
+p_phy <- ps %>% 
   comp_barplot(tax_level = "Phylum", sample_order = "default", n_taxa = 10, label = "sample_name") +
   coord_flip()
 ggsave(here("plots/comp_barplot_phy.png"), width = 20, height = 20, units = "cm", dpi = 300)
 
 
-proteobacteria <- subset_taxa(pss, Phylum == "Proteobacteria")
+proteobacteria <- subset_taxa(ps, Phylum == "Proteobacteria")
 p_pro <- proteobacteria %>% 
   comp_barplot(tax_level = "Genus", sample_order = "default", n_taxa = 10, label = "sample_name") +
   coord_flip()
