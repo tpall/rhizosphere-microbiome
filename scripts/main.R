@@ -393,7 +393,7 @@ rich <- estimate_richness(ps, measures = c("Observed", "Shannon", "InvSimpson"))
 alpha <- as_tibble(sample_data(ps)) %>% 
   mutate_at("zone", ~as.numeric(str_extract(.x, "\\d"))) %>% 
   bind_cols(rich) %>% 
-  mutate(zone = str_c("Z", zone), rhizo = ifelse(as.logical(rhizo), "+ser", "-ser"))
+  mutate(zone = str_c("Z", zone), rhizo = ifelse(as.logical(rhizo), "+rhiz", "-rhiz"))
 
 libsize <- otu_table(ps) %>% 
   colSums()
@@ -423,6 +423,10 @@ m3o <- brm(
 summary(m3o)
 pp_check(m3o)
 
+po <- plot(conditional_effects(m3o), plot = FALSE)
+po$zone
+po$rhizo
+
 newdata <- alpha %>% 
   data_grid(rhizo, zone, log_libsize = 10) %>% 
   add_epred_draws(m3o)
@@ -432,9 +436,9 @@ oh <- newdata %>%
   mutate(id = row_number()) %>% 
   select(id, zone, rhizo, .draw, .epred) %>% 
   pivot_wider(names_from = rhizo, values_from = .epred) %>% 
-  mutate(es = `+ser` - `-ser`, h1 = as.numeric(es > 0)) %>% 
+  mutate(es = `+rhiz` - `-rhiz`, h1 = as.numeric(es > 0)) %>% 
   group_by(zone) %>% 
-  mean_qi(`+ser`, `-ser`, es, h1)
+  mean_qi(`+rhiz`, `-rhiz`, es, h1)
 
 stars <- oh %>% 
   filter(h1 >= 0.95) %>% 
@@ -450,10 +454,34 @@ observed <- newdata %>%
   stat_pointinterval(aes(x = factor(zone), y = .epred, color = rhizo), position = pd) +
   geom_jitter(data = alpha, aes(x = factor(zone), y = Observed, color = rhizo), position = position_jitterdodge(jitter.width = 0.1, dodge.width = pd$width)) +
   geom_text(data = stars, aes(zone, Observed, label = label), inherit.aes = FALSE, nudge_y = 100, size = 5) +
-  labs(x = "Zone", y = "Observed") +
-  theme(legend.title = element_blank())
+  scale_color_discrete("S. europaea\nrhizosphere", labels = c("No", "Yes")) +
+  labs(y = "Observed") +
+  theme(
+    axis.title.x = element_blank()
+    )
 ggsave(here("plots/diversity_observed.png"))
 hypothesis(m3o, "zoneZ3 < 0")
+hypothesis(m3o, "zoneZ2 < 0")
+hypothesis(m3o, "exp(zoneZ3) < exp(zoneZ2)")
+newdata %>% 
+  filter(rhizo == "-rhiz") %>% 
+  group_by(zone) %>% 
+  mutate(id = row_number()) %>% 
+  select(id, zone, .draw, .epred) %>% 
+  pivot_wider(names_from = zone, values_from = .epred) %>% 
+  mutate(
+    es12 = Z1 - Z2,
+    es13 = Z1 - Z3,
+    es23 = Z2 - Z3,
+    h12 = as.numeric(es12 > 0),
+    h13 = as.numeric(es13 > 0),
+    h23 = as.numeric(es23 > 0)
+  ) %>% 
+  pivot_longer(cols = c("Z1", "Z2", "Z3", "es12", "es13", "es23", "h12", "h13", "h23")) %>% 
+  group_by(name) %>% 
+  mean_hdci(value) %>% 
+  view()
+
 
 # Observed number of taxa
 newdata %>% 
@@ -482,6 +510,9 @@ m3s <- brm(
 
 pp_check(m3s)
 psh <- plot(conditional_effects(m3s), plot = FALSE)
+psh$zone
+psh$rhizo
+
 summary(m3s)
 
 newdata <- alpha %>% 
@@ -499,6 +530,7 @@ sh <- newdata %>%
 
 hypothesis(m3s, "zoneZ3 < 0", alpha = 0.05)
 hypothesis(m3s, "zoneZ2 < 0", alpha = 0.05)
+hypothesis(m3s, "zoneZ3 < zoneZ2", alpha = 0.05)
 
 stars <- sh %>% 
   filter(h1 >= 0.95) %>% 
@@ -513,9 +545,12 @@ shannon <- newdata %>%
   ggplot() +
   stat_pointinterval(aes(x = factor(zone), y = .epred, color = rhizo), position = pd) +
   geom_jitter(data = alpha, aes(x = factor(zone), y = Shannon, color = rhizo), position = position_jitterdodge(jitter.width = 0.1, dodge.width = pd$width)) +
-  geom_text(data = stars, aes(zone, Shannon, label = label), inherit.aes = FALSE, nudge_y = 0.2, size = 5) +
-  labs(x = "Zone", y = "Shannon") +
-  theme(legend.title = element_blank())
+  geom_text(data = stars, aes(zone, Shannon, label = label), inherit.aes = FALSE, nudge_y = 0.1, size = 5) +
+  scale_color_discrete("S. europaea\nrhizosphere", labels = c("No", "Yes")) +
+  labs(y = "Shannon index") +
+  theme(
+    axis.title.x = element_blank()
+  )
 
 ggsave("plots/diversity_shannon.png", shannon)
 
@@ -540,7 +575,7 @@ m3is <- brm(
 
 pp_check(m3is)
 pis <- plot(conditional_effects(m3is), plot = FALSE)
-summary(m3is)
+pis$zone
 
 newdata <- alpha %>% 
   data_grid(rhizo, zone, log_libsize = 10) %>% 
@@ -551,30 +586,38 @@ newdata %>%
   mutate(id = row_number()) %>% 
   select(id, zone, rhizo, .draw, .epred) %>% 
   pivot_wider(names_from = rhizo, values_from = .epred) %>% 
-  mutate(es = `+ser` - `-ser`, h1 = as.numeric(es > 0)) %>% 
+  mutate(es = `+rhiz` - `-rhiz`, h1 = as.numeric(es > 0)) %>% 
   group_by(zone) %>% 
-  mean_qi(`+ser`, `-ser`, es, h1)
+  mean_qi(`+rhiz`, `-rhiz`, es, h1)
 
 invsimpson <- newdata %>% 
   ggplot() +
   stat_pointinterval(aes(x = factor(zone), y = .epred, color = rhizo), position = pd) +
   geom_jitter(data = alpha, aes(x = factor(zone), y = InvSimpson, color = rhizo), position = position_jitterdodge(jitter.width = 0.1, dodge.width = pd$width)) +
-  labs(x = "Zone", y = "InvSimpson") +
-  theme(legend.title = element_blank())
+  scale_color_discrete("S. europaea\nrhizosphere", labels = c("No", "Yes")) +
+  labs(y = "InvSimpson") +
+  theme(
+    axis.title.x = element_blank()
+  )
 
-ggsave("plots/diversity_shannon.png", shannon)
-hypothesis(m3s, "zoneZ3 < 0", alpha = 0.05)
-hypothesis(m3s, "zoneZ2 < 0", alpha = 0.05)
+ggsave("plots/diversity_invsimpson.png", shannon)
+hypothesis(m3is, "zoneZ3 < 0", alpha = 0.05)
+hypothesis(m3is, "zoneZ2 < 0", alpha = 0.05)
+hypothesis(m3is, "zoneZ3 < zoneZ2", alpha = 0.05)
 
 #'
 #' Alpha diversity plot
 #'
 #+
-diversity <- (observed | shannon | invsimpson) + 
-  plot_layout(guides = "collect")
+diversity <- ((observed | shannon | invsimpson) + 
+  plot_layout(guides = "collect") & theme(legend.position = "bottom")) +
+  plot_annotation(tag_levels = "A") & theme(plot.tag = element_text(face = "plain"))
 
-diversity + plot_annotation(tag_levels = "A")
 ggsave(here("plots/ritchness_plot.png"), width = 25, height = 16, units = "cm")
+ggsave(here("plots/beta_diversity.png"), plot = betap, width = 20, height = 10, units = "cm", dpi = 300)
+tiff(here(glue::glue("plots/alpha_diversity.tiff")), width = 20, height = 10, units = "cm", res = 300)
+diversity
+dev.off()
 
 #' 
 #' ## Ordination plot
