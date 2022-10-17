@@ -362,7 +362,9 @@ nrow(d)
 comm1 <- brm(
   common | trials(total) ~ 1,
   data = tibble(common = d[-1] %>% get_common_otus(), total = nrow(d)),
-  family = binomial()
+  family = binomial(),
+  file = here("models/common | trials(total) ~ 1"),
+  file_refit = "on_change"
 )
 
 fixef(comm1) %>% inv_logit_scaled()
@@ -479,8 +481,7 @@ newdata %>%
   ) %>% 
   pivot_longer(cols = c("Z1", "Z2", "Z3", "es12", "es13", "es23", "h12", "h13", "h23")) %>% 
   group_by(name) %>% 
-  mean_hdci(value) %>% 
-  view()
+  mean_hdci(value) 
 
 
 # Observed number of taxa
@@ -524,9 +525,9 @@ sh <- newdata %>%
   mutate(id = row_number()) %>% 
   select(id, zone, rhizo, .draw, .epred) %>% 
   pivot_wider(names_from = rhizo, values_from = .epred) %>% 
-  mutate(es = `+ser` - `-ser`, h1 = as.numeric(es > 0)) %>% 
+  mutate(es = `+rhiz` - `-rhiz`, h1 = as.numeric(es > 0)) %>% 
   group_by(zone) %>% 
-  mean_qi(`+ser`, `-ser`, es, h1)
+  mean_qi(`+rhiz`, `-rhiz`, es, h1)
 
 hypothesis(m3s, "zoneZ3 < 0", alpha = 0.05)
 hypothesis(m3s, "zoneZ2 < 0", alpha = 0.05)
@@ -553,6 +554,24 @@ shannon <- newdata %>%
   )
 
 ggsave("plots/diversity_shannon.png", shannon)
+
+newdata %>% 
+  filter(rhizo == "-rhiz") %>% 
+  group_by(zone) %>% 
+  mutate(id = row_number()) %>% 
+  select(id, zone, .draw, .epred) %>% 
+  pivot_wider(names_from = zone, values_from = .epred) %>% 
+  mutate(
+    es12 = Z1 - Z2,
+    es13 = Z1 - Z3,
+    es23 = Z2 - Z3,
+    h12 = as.numeric(es12 > 0),
+    h13 = as.numeric(es13 > 0),
+    h23 = as.numeric(es23 > 0)
+  ) %>% 
+  pivot_longer(cols = c("Z1", "Z2", "Z3", "es12", "es13", "es23", "h12", "h13", "h23")) %>% 
+  group_by(name) %>% 
+  mean_hdci(value)
 
 #'
 #' Inverse Simpson diversity index.
@@ -614,7 +633,6 @@ diversity <- ((observed | shannon | invsimpson) +
   plot_annotation(tag_levels = "A") & theme(plot.tag = element_text(face = "plain"))
 
 ggsave(here("plots/ritchness_plot.png"), width = 25, height = 16, units = "cm")
-ggsave(here("plots/beta_diversity.png"), plot = betap, width = 20, height = 10, units = "cm", dpi = 300)
 tiff(here(glue::glue("plots/alpha_diversity.tiff")), width = 20, height = 10, units = "cm", res = 300)
 diversity
 dev.off()
@@ -630,9 +648,10 @@ dev.off()
 #'
 #+ fig.cap="NMD plot." 
 set.seed(11)
+ps_rel <- microbiome::transform(ps, "compositional")
 ord <- ordinate(ps, "NMDS", "bray")
 p2 <- plot_ordination(
-  ps %>% ps_mutate(rhizo = ifelse(rhizo == 0, "no supp", "+Se rhiz")), 
+  ps %>% ps_mutate(rhizo = ifelse(rhizo == 0, "-rhiz", "+rhiz")), 
   ord, 
   type = "samples", 
   color = "zone",
@@ -641,7 +660,6 @@ p2 <- plot_ordination(
 ) 
 pnmds <- p2 %>% 
   ggplot(aes(NMDS1, NMDS2, color = zone)) +
-  # stat_ellipse(aes(linetype = rhizo)) +
   stat_ellipse(linetype = 2) +
   geom_point(aes(shape = rhizo), size = 3) +
   coord_fixed() +
@@ -697,7 +715,7 @@ pdc <- dist_centroid %>%
   theme(legend.title = element_blank(), axis.title.x = element_blank()) 
 ggsave(here("plots/distance_to_centroid_zones_rhizo.png"), pdc, width = 12, height = 8, units = "cm", dpi = 300)
 
-betap <- pnmds + pdc + plot_annotation(tag_levels = "A")
+betap <- pnmds + pdc + plot_annotation(tag_levels = "A") & theme(plot.tag = element_text(face = "plain"))
 ggsave(here("plots/beta_diversity.png"), plot = betap, width = 20, height = 10, units = "cm", dpi = 300)
 tiff(here(glue::glue("plots/beta_diversity.tiff")), width = 20, height = 10, units = "cm", res = 300)
 betap
