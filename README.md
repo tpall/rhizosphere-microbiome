@@ -1,6 +1,6 @@
 # rhizosphere-microbiome
 
-Analysis of microbial community composition in *Salix alba* cuttings supplemented with *Salicornia europaea* rhizosphere microbiome.
+Analysis of microbial community composition in *Salix alba* cuttings supplemented with *Salicornia europaea* rhizosphere microbiome ([1](#references)).
 
 ## Study design
 
@@ -70,3 +70,7 @@ source("scripts/main.R")
 ```
 
 Data are downloaded automatically from the Galaxy HPC server on first run and cached to `results/`.
+
+
+## References
+1. Fetsiukh, A., Pall, T., & Timmusk, S. (2023). The species richness of the Salix viminalis rhizosphere at the Stebnyk tailings storages is dependent on supplementation from the Salicornia europaea rhizosphere. openRxiv. https://doi.org/10.1101/2023.09.25.559290
